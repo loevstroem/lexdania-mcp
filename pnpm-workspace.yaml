@@ -1,0 +1,7 @@
+allowBuilds:
+  esbuild: true # bundler used by wrangler + vitest
+  workerd: true # Workers runtime for `wrangler dev`/deploy
+  '@google/genai': false
+  protobufjs: false
+  core-js-pure: false
+  sharp: false

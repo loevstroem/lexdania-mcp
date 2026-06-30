@@ -1,0 +1,49 @@
+{
+  "name": "lexdania-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LexDania / Danish legislation query MCP server",
+  "packageManager": "pnpm@11.0.9",
+  "scripts": {
+    "preinstall": "npx only-allow pnpm",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check",
+    "format": "biome check --write",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "cf-typegen": "wrangler types",
+    "create-store": "node scripts/create-file-search-store.mjs"
+  },
+  "dependencies": {
+    "@google/genai": "2.10.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@xmldom/xmldom": "^0.9.10",
+    "agents": "^0.17.1",
+    "xpath": "^0.0.34",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9",
+    "wrangler": "^4.105.0"
+  },
+  "pnpm": {
+    "peerDependencyRules": {
+      "ignoreMissing": [
+        "ai",
+        "react",
+        "@ai-sdk/react",
+        "@tanstack/ai",
+        "@x402/core",
+        "@x402/evm",
+        "chat",
+        "just-bash",
+        "vite"
+      ]
+    }
+  }
+}
