@@ -1,3 +1,4 @@
+import { DocumentTooLargeError } from "@/services/retsinformation/client";
 import { InvalidEliError } from "@/services/retsinformation/eli";
 
 /**
@@ -24,7 +25,8 @@ export async function presentMcpResult(operation: () => Promise<unknown>): Promi
 
     let friendlyMessage = "An unexpected error occurred while executing the tool. Please check your query or try again later.";
 
-    if (error instanceof InvalidEliError) {
+    if (error instanceof InvalidEliError || error instanceof DocumentTooLargeError) {
+      // Both carry an actionable, client-facing message; surface it as-is.
       friendlyMessage = error.message;
     } else if (error instanceof Error) {
       const msg = error.message;
