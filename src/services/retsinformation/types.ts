@@ -21,24 +21,30 @@ export interface GroundedAnswer {
   citations: Citation[];
 }
 
-/** A snapshot of on-demand ingest progress, reported once per poll iteration. */
-export interface IngestProgress {
+// Poll budget for one on-demand indexing; indexing fails once exceeded.
+// Shared so progress reporting stays in sync with the corpus implementation.
+export const INDEX_BUDGET_MS = 120_000;
+
+/** A snapshot of on-demand index progress, reported once per poll iteration. */
+export interface IndexProgress {
   /** Milliseconds elapsed since the document upload completed. */
   elapsedMs: number;
-  /** The total poll budget in milliseconds; ingestion fails once exceeded. */
+  /** The total poll budget in milliseconds; indexing fails once exceeded. */
   totalMs: number;
   /** Human-readable status suitable for client display. */
   message: string;
 }
 
-export type IngestProgressReporter = (progress: IngestProgress) => void;
+export type IndexProgressReporter = (progress: IndexProgress) => void;
 
 /**
  * A corpus of law text that can answer questions with citations. The law for a
- * scoped question is ingested on demand (deduplicated by ELI identity).
+ * scoped question is indexed on demand (deduplicated by ELI identity).
+ * `find` resolves membership through the backing store, while `index` returns
+ * the created document name.
  */
 export interface LegislationCorpus {
-  has(eli: Eli): Promise<boolean>;
-  ingest(eli: Eli, pdf: Blob, onProgress?: IngestProgressReporter): Promise<void>;
+  find(eli: Eli): Promise<string | undefined>;
+  index(eli: Eli, pdf: Blob, onProgress?: IndexProgressReporter): Promise<string>;
   answer(question: string, scopedEli: Eli | undefined, maxSources: number): Promise<GroundedAnswer>;
 }

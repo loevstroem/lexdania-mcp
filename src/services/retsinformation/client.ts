@@ -11,7 +11,8 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
 // Published legislation is immutable per ELI (consolidations get new ELIs), so a
 // long TTL is safe; 24h bounds staleness of the rare corrected republication.
-const CACHE_TTL_SECONDS = 24 * 60 * 60;
+// Exported as the shared freshness policy for anything derived from a law.
+export const CACHE_TTL_SECONDS = 24 * 60 * 60;
 
 export interface RetsinformationClientOptions {
   /** Max bytes to buffer for a single document before refusing it. Default 10MB. */
@@ -181,12 +182,12 @@ export class RetsinformationClient implements LawSource {
       chunks.push(value);
     }
 
-    const out = new Uint8Array(total);
+    const bytes = new Uint8Array(total);
     let offset = 0;
     for (const chunk of chunks) {
-      out.set(chunk, offset);
+      bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    return out;
+    return bytes;
   }
 }

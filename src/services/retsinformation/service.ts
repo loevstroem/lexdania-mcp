@@ -1,10 +1,16 @@
 import type { QueryResult, StructureProfile, XmlInspector } from "@/services/lexdania/types";
 import { Eli } from "./eli";
-import type { GroundedAnswer, IngestProgressReporter, LawSource, LegislationCorpus } from "./types";
+import { ResolverUnavailableError, resolveDocument } from "./resolver";
+import { type GroundedAnswer, INDEX_BUDGET_MS, type IndexProgressReporter, type LawSource, type LegislationCorpus } from "./types";
 
 export interface AskDocumentDependencies {
   lawSource: LawSource;
   legislationCorpus: LegislationCorpus;
+  /**
+   * Resolves membership/indexing through the edge-cached loopback entrypoint.
+   * Omitted or failing: resolution falls back to the in-process corpus path.
+   */
+  resolveRemote?: (eli: Eli) => Promise<string>;
   /** Extends the runtime beyond the response, e.g. `ctx.waitUntil` on Workers. */
   waitUntil: (promise: Promise<unknown>) => void;
 }
@@ -14,55 +20,29 @@ export interface AskDocumentRequest {
   /** When set, only this law is searched; otherwise the whole corpus. */
   scopedEli?: Eli;
   maxSources: number;
-  /** Receives ingest progress while a cold scoped ask fetches and processes the law. */
-  onIngestProgress?: IngestProgressReporter;
+  /** Receives indexing progress while a cold scoped ask fetches and processes the law. */
+  onIndexProgress?: IndexProgressReporter;
 }
 
-// Coalesces concurrent ingestions of the same law within one isolate so parallel
-// tool calls don't upload it twice. Best-effort: requests served by different
-// isolates can still race — store.has() is the durable guard against re-ingesting.
-interface PendingIngestion {
-  promise: Promise<void>;
-  progressReporters: Set<IngestProgressReporter>;
-}
-
-const pendingIngestions = new Map<string, PendingIngestion>();
+const HEARTBEAT_INTERVAL_MS = 5_000;
+// Upper bound for one remote resolution: the indexing poll budget plus a margin
+// for fetching the PDF from the origin.
+const HEARTBEAT_TOTAL_MS = INDEX_BUDGET_MS + 30_000;
 
 /**
- * Answer a free-text question against legislation, with citations.
- * A scoped law is fetched and ingested on demand if the store doesn't have it yet.
+ * Answers a free-text question against legislation, with citations.
+ * A scoped law is fetched and indexed on demand if the store doesn't have it yet.
+ *
+ * @param deps - Dependencies including the law source and legislation corpus
+ * @param request - Query parameters and optional scoped ELI
+ * @returns A promise resolving to the grounded answer with citations
  */
 export async function askDocument(deps: AskDocumentDependencies, request: AskDocumentRequest): Promise<GroundedAnswer> {
   const { lawSource, legislationCorpus } = deps;
 
   const scopedEli = request.scopedEli;
   if (scopedEli) {
-    const eliId = scopedEli.id;
-    let pendingIngestion = pendingIngestions.get(eliId);
-    if (!pendingIngestion) {
-      const progressReporters = new Set<IngestProgressReporter>();
-      if (request.onIngestProgress) progressReporters.add(request.onIngestProgress);
-      // Clean up inside the awaited promise; a detached `.finally(...)` would be a
-      // second, unhandled promise that rejects on every failed ingest.
-      const ingestionPromise = Promise.resolve().then(async () => {
-        try {
-          if (!(await legislationCorpus.has(scopedEli))) {
-            const pdf = await lawSource.fetchPdf(scopedEli);
-            await legislationCorpus.ingest(scopedEli, pdf, (progress) => {
-              for (const reportProgress of progressReporters) reportProgress(progress);
-            });
-          }
-        } finally {
-          pendingIngestions.delete(eliId);
-        }
-      });
-      pendingIngestion = { promise: ingestionPromise, progressReporters };
-      pendingIngestions.set(eliId, pendingIngestion);
-    } else if (request.onIngestProgress) {
-      pendingIngestion.progressReporters.add(request.onIngestProgress);
-    }
-    deps.waitUntil(pendingIngestion.promise);
-    await pendingIngestion.promise;
+    await prepareDocument(deps, scopedEli, request.onIndexProgress);
   }
 
   const result = await legislationCorpus.answer(request.question, scopedEli, request.maxSources);
@@ -92,6 +72,72 @@ export async function askDocument(deps: AskDocumentDependencies, request: AskDoc
     answer: result.answer,
     citations: enrichedCitations,
   };
+}
+
+/**
+ * Guarantees the scoped law is present in the corpus before answering.
+ * Uses the cached resolver first so a cache hit skips the store listing, and
+ * resolves in-process only when the cached transport is absent or unavailable.
+ *
+ * @param deps - Ask-flow dependencies including the optional cached resolver
+ * @param eli - The normalized ELI identifier of the scoped law
+ * @param [onProgress] - Reporter kept alive during cold resolutions
+ * @throws An error surfaced from the remote resolution when it ran and failed; re-running it in-process could duplicate the index
+ */
+async function prepareDocument(deps: AskDocumentDependencies, eli: Eli, onProgress?: IndexProgressReporter): Promise<void> {
+  const { resolveRemote } = deps;
+  let lastProgress = -1;
+  const reportProgress: IndexProgressReporter | undefined = onProgress
+    ? (progress) => {
+        if (progress.elapsedMs <= lastProgress) return;
+        lastProgress = progress.elapsedMs;
+        onProgress(progress);
+      }
+    : undefined;
+  if (resolveRemote) {
+    const resolution = resolveRemote(eli);
+    // Backstop so a remote index can finish even if the client disconnects.
+    deps.waitUntil(resolution.catch(() => {}));
+    const stopHeartbeat = reportProgress ? startHeartbeat(eli, reportProgress) : undefined;
+    try {
+      await resolution;
+      return;
+    } catch (error) {
+      if (!(error instanceof ResolverUnavailableError)) throw error;
+      console.warn(`cached resolver unavailable for ${eli.id}; resolving in-process`, error);
+    } finally {
+      stopHeartbeat?.();
+    }
+  }
+  await resolveDocument(deps, { eli, onProgress: reportProgress });
+}
+
+/**
+ * Emits periodic progress while a remote resolution is in flight. The cached
+ * resolver indexes out-of-band, so per-poll progress cannot cross the loopback
+ * boundary; the heartbeat keeps cold scoped asks reporting activity.
+ *
+ * @param eli - The normalized ELI identifier of the scoped law
+ * @param reportProgress - Reporter invoked once per heartbeat interval
+ * @returns A function stopping the heartbeat
+ */
+function startHeartbeat(eli: Eli, reportProgress: IndexProgressReporter): () => void {
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= HEARTBEAT_TOTAL_MS) {
+      // MCP requires the progress value to increase per notification; go
+      // silent rather than repeat the capped value for an overlong resolution.
+      clearInterval(timer);
+      return;
+    }
+    reportProgress({
+      elapsedMs,
+      totalMs: HEARTBEAT_TOTAL_MS,
+      message: `Ensuring ${eli.id} is indexed into File Search`,
+    });
+  }, HEARTBEAT_INTERVAL_MS);
+  return () => clearInterval(timer);
 }
 
 export interface QueryDocumentDependencies {

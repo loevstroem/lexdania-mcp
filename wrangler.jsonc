@@ -18,6 +18,15 @@
       "custom_domain": true
     }
   ],
+  // Workers Caching: the gateway (default export) always runs; only the
+  // DocumentResolver loopback entrypoint is served through the cache.
+  "cache": {
+    "enabled": true
+  },
+  "exports": {
+    "default": { "type": "worker", "cache": { "enabled": false } },
+    "DocumentResolver": { "type": "worker", "cache": { "enabled": true } }
+  },
   "vars": {
     "GEMINI_MODEL": "gemini-3.5-flash"
   },

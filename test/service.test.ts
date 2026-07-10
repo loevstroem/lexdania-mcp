@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { LexDaniaXmlInspector } from "@/services/lexdania/xml";
 import { Eli } from "@/services/retsinformation/eli";
+import { ResolverUnavailableError } from "@/services/retsinformation/resolver";
 import { askDocument, compareStructureDocument, metadataDocument } from "@/services/retsinformation/service";
-import type { IngestProgressReporter, LawSource, LegislationCorpus } from "@/services/retsinformation/types";
+import type { IndexProgressReporter, LawSource, LegislationCorpus } from "@/services/retsinformation/types";
 
 // Mock JSON-LD response matching a simplified version of eli-48.json
 const MOCK_JSON_LD = [
@@ -214,7 +215,7 @@ describe("askDocument", () => {
     expect(result.citations).toEqual(citations);
   });
 
-  it("registers a cold ingestion with waitUntil and forwards ingest progress", async () => {
+  it("registers a cold indexing with waitUntil and forwards indexing progress", async () => {
     const pdf = new Blob(["%PDF"]);
     const mockLawSource = {
       fetchPdf: vi.fn().mockResolvedValue(pdf),
@@ -222,43 +223,45 @@ describe("askDocument", () => {
     } as unknown as LawSource;
 
     const mockLegislationCorpus = {
-      has: vi.fn().mockResolvedValue(false),
-      ingest: vi.fn().mockImplementation(async (_eli: Eli, _pdf: Blob, onProgress?: (progress: unknown) => void) => {
-        onProgress?.({ elapsedMs: 5_000, totalMs: 120_000, message: "Ingesting eli/lta/2024/48" });
+      find: vi.fn().mockResolvedValue(undefined),
+      index: vi.fn().mockImplementation(async (_eli: Eli, _pdf: Blob, onProgress?: (progress: unknown) => void) => {
+        onProgress?.({ elapsedMs: 5_000, totalMs: 120_000, message: "Indexing eli/lta/2024/48" });
+        return "fileSearchStores/test/documents/doc-48";
       }),
       answer: vi.fn().mockResolvedValue({ answer: "ok", citations: [] }),
     } as unknown as LegislationCorpus;
 
     const waitUntil = vi.fn();
-    const onIngestProgress = vi.fn();
+    const onIndexProgress = vi.fn();
 
     await askDocument(
       { lawSource: mockLawSource, legislationCorpus: mockLegislationCorpus, waitUntil },
-      { question: "What is the environment?", scopedEli: Eli.parse("lta/2024/48"), maxSources: 5, onIngestProgress },
+      { question: "What is the environment?", scopedEli: Eli.parse("lta/2024/48"), maxSources: 5, onIndexProgress },
     );
 
     expect(waitUntil).toHaveBeenCalledTimes(1);
     expect(waitUntil.mock.calls[0]?.[0]).toBeInstanceOf(Promise);
-    expect(mockLegislationCorpus.ingest).toHaveBeenCalledWith(expect.objectContaining({ id: "eli/lta/2024/48" }), pdf, expect.any(Function));
-    expect(onIngestProgress).toHaveBeenCalledWith({ elapsedMs: 5_000, totalMs: 120_000, message: "Ingesting eli/lta/2024/48" });
+    expect(mockLegislationCorpus.index).toHaveBeenCalledWith(expect.objectContaining({ id: "eli/lta/2024/48" }), pdf, expect.any(Function));
+    expect(onIndexProgress).toHaveBeenCalledWith({ elapsedMs: 5_000, totalMs: 120_000, message: "Indexing eli/lta/2024/48" });
   });
 
-  it("forwards shared ingestion progress to every waiting caller", async () => {
+  it("forwards shared indexing progress to every waiting caller", async () => {
     const pdf = new Blob(["%PDF"]);
-    let reportProgress: IngestProgressReporter | undefined;
-    let finishIngest = () => {};
-    const ingestPending = new Promise<void>((resolve) => {
-      finishIngest = resolve;
+    let reportProgress: IndexProgressReporter | undefined;
+    let finishIndex = () => {};
+    const indexPending = new Promise<void>((resolve) => {
+      finishIndex = resolve;
     });
     const mockLawSource = {
       fetchPdf: vi.fn().mockResolvedValue(pdf),
       fetchJson: vi.fn().mockRejectedValue(new Error("no metadata")),
     } as unknown as LawSource;
     const mockLegislationCorpus = {
-      has: vi.fn().mockResolvedValue(false),
-      ingest: vi.fn().mockImplementation(async (_eli: Eli, _pdf: Blob, onProgress?: IngestProgressReporter) => {
+      find: vi.fn().mockResolvedValue(undefined),
+      index: vi.fn().mockImplementation(async (_eli: Eli, _pdf: Blob, onProgress?: IndexProgressReporter) => {
         reportProgress = onProgress;
-        await ingestPending;
+        await indexPending;
+        return "fileSearchStores/test/documents/doc-49";
       }),
       answer: vi.fn().mockResolvedValue({ answer: "ok", citations: [] }),
     } as unknown as LegislationCorpus;
@@ -267,17 +270,157 @@ describe("askDocument", () => {
     const secondProgress = vi.fn();
     const deps = { lawSource: mockLawSource, legislationCorpus: mockLegislationCorpus, waitUntil: vi.fn() };
 
-    const firstAsk = askDocument(deps, { question: "First", scopedEli: eli, maxSources: 5, onIngestProgress: firstProgress });
+    const firstAsk = askDocument(deps, { question: "First", scopedEli: eli, maxSources: 5, onIndexProgress: firstProgress });
     await vi.waitUntil(() => reportProgress !== undefined);
-    const secondAsk = askDocument(deps, { question: "Second", scopedEli: eli, maxSources: 5, onIngestProgress: secondProgress });
+    const secondAsk = askDocument(deps, { question: "Second", scopedEli: eli, maxSources: 5, onIndexProgress: secondProgress });
 
-    const progress = { elapsedMs: 5_000, totalMs: 120_000, message: "Ingesting eli/lta/2024/49" };
+    const progress = { elapsedMs: 5_000, totalMs: 120_000, message: "Indexing eli/lta/2024/49" };
     reportProgress?.(progress);
-    finishIngest();
+    finishIndex();
     await Promise.all([firstAsk, secondAsk]);
 
-    expect(mockLegislationCorpus.ingest).toHaveBeenCalledTimes(1);
+    expect(mockLegislationCorpus.index).toHaveBeenCalledTimes(1);
     expect(firstProgress).toHaveBeenCalledWith(progress);
     expect(secondProgress).toHaveBeenCalledWith(progress);
+  });
+
+  it("resolves scoped membership through the cached resolver without consulting the corpus", async () => {
+    const mockLawSource = {
+      fetchPdf: vi.fn(),
+      fetchJson: vi.fn().mockRejectedValue(new Error("no metadata")),
+    } as unknown as LawSource;
+    const mockLegislationCorpus = {
+      find: vi.fn(),
+      index: vi.fn(),
+      answer: vi.fn().mockResolvedValue({ answer: "ok", citations: [] }),
+    } as unknown as LegislationCorpus;
+    const resolveRemote = vi.fn().mockResolvedValue("fileSearchStores/test/documents/doc-50");
+    const waitUntil = vi.fn();
+
+    await askDocument(
+      { lawSource: mockLawSource, legislationCorpus: mockLegislationCorpus, resolveRemote, waitUntil },
+      { question: "What is the environment?", scopedEli: Eli.parse("lta/2024/50"), maxSources: 5 },
+    );
+
+    expect(resolveRemote).toHaveBeenCalledWith(expect.objectContaining({ id: "eli/lta/2024/50" }));
+    expect(mockLegislationCorpus.find).not.toHaveBeenCalled();
+    expect(mockLegislationCorpus.index).not.toHaveBeenCalled();
+    expect(mockLawSource.fetchPdf).not.toHaveBeenCalled();
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to in-process resolution when the cached resolver fails", async () => {
+    const pdf = new Blob(["%PDF"]);
+    const mockLawSource = {
+      fetchPdf: vi.fn().mockResolvedValue(pdf),
+      fetchJson: vi.fn().mockRejectedValue(new Error("no metadata")),
+    } as unknown as LawSource;
+    const mockLegislationCorpus = {
+      find: vi.fn().mockResolvedValue(undefined),
+      index: vi.fn().mockResolvedValue("fileSearchStores/test/documents/doc-51"),
+      answer: vi.fn().mockResolvedValue({ answer: "ok", citations: [] }),
+    } as unknown as LegislationCorpus;
+    const resolveRemote = vi.fn().mockRejectedValue(new ResolverUnavailableError("resolver unreachable"));
+
+    await askDocument(
+      { lawSource: mockLawSource, legislationCorpus: mockLegislationCorpus, resolveRemote, waitUntil: vi.fn() },
+      { question: "What is the environment?", scopedEli: Eli.parse("lta/2024/51"), maxSources: 5 },
+    );
+
+    expect(resolveRemote).toHaveBeenCalledTimes(1);
+    expect(mockLegislationCorpus.find).toHaveBeenCalledWith(expect.objectContaining({ id: "eli/lta/2024/51" }));
+    expect(mockLawSource.fetchPdf).toHaveBeenCalledTimes(1);
+    expect(mockLegislationCorpus.index).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates a definitive remote resolution failure without re-running it in-process", async () => {
+    const mockLawSource = { fetchPdf: vi.fn() } as unknown as LawSource;
+    const mockLegislationCorpus = {
+      find: vi.fn(),
+      index: vi.fn(),
+      answer: vi.fn(),
+    } as unknown as LegislationCorpus;
+    const resolveRemote = vi.fn().mockRejectedValue(new Error("document resolver failed for eli/lta/2024/54: indexing timed out"));
+
+    await expect(
+      askDocument(
+        { lawSource: mockLawSource, legislationCorpus: mockLegislationCorpus, resolveRemote, waitUntil: vi.fn() },
+        { question: "What is the environment?", scopedEli: Eli.parse("lta/2024/54"), maxSources: 5 },
+      ),
+    ).rejects.toThrow("indexing timed out");
+
+    expect(mockLegislationCorpus.find).not.toHaveBeenCalled();
+    expect(mockLawSource.fetchPdf).not.toHaveBeenCalled();
+    expect(mockLegislationCorpus.index).not.toHaveBeenCalled();
+  });
+
+  it("emits heartbeat progress while the cached resolver is in flight and stops after it settles", async () => {
+    vi.useFakeTimers();
+    try {
+      let finishResolution = (_documentName: string) => {};
+      const resolveRemote = vi.fn().mockReturnValue(
+        new Promise<string>((resolve) => {
+          finishResolution = resolve;
+        }),
+      );
+      const mockLegislationCorpus = {
+        answer: vi.fn().mockResolvedValue({ answer: "ok", citations: [] }),
+      } as unknown as LegislationCorpus;
+      const onIndexProgress = vi.fn();
+
+      const ask = askDocument(
+        { lawSource: {} as LawSource, legislationCorpus: mockLegislationCorpus, resolveRemote, waitUntil: vi.fn() },
+        { question: "What is the environment?", scopedEli: Eli.parse("lta/2024/52"), maxSources: 5, onIndexProgress },
+      );
+
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(onIndexProgress).toHaveBeenCalledTimes(2);
+      expect(onIndexProgress).toHaveBeenLastCalledWith({ elapsedMs: 10_000, totalMs: 150_000, message: "Ensuring eli/lta/2024/52 is indexed into File Search" });
+
+      finishResolution("fileSearchStores/test/documents/doc-52");
+      await ask;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(onIndexProgress).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps progress monotonic when cached resolution falls back after heartbeats", async () => {
+    vi.useFakeTimers();
+    try {
+      const mockLawSource = {
+        fetchPdf: vi.fn().mockResolvedValue(new Blob(["%PDF"])),
+      } as unknown as LawSource;
+      const mockLegislationCorpus = {
+        find: vi.fn().mockResolvedValue(undefined),
+        index: vi.fn().mockImplementation(async (_eli: Eli, _pdf: Blob, reportProgress?: IndexProgressReporter) => {
+          reportProgress?.({ elapsedMs: 0, totalMs: 120_000, message: "Uploaded document" });
+          reportProgress?.({ elapsedMs: 5_000, totalMs: 120_000, message: "Indexing document" });
+          reportProgress?.({ elapsedMs: 15_000, totalMs: 120_000, message: "Indexed document" });
+          return "fileSearchStores/test/documents/doc-55";
+        }),
+        answer: vi.fn().mockResolvedValue({ answer: "ok", citations: [] }),
+      } as unknown as LegislationCorpus;
+      const resolveRemote = vi.fn().mockImplementation(
+        () =>
+          new Promise<string>((_resolve, reject) => {
+            setTimeout(() => reject(new ResolverUnavailableError("resolver unreachable")), 11_000);
+          }),
+      );
+      const onIndexProgress = vi.fn();
+
+      const ask = askDocument(
+        { lawSource: mockLawSource, legislationCorpus: mockLegislationCorpus, resolveRemote, waitUntil: vi.fn() },
+        { question: "What is the environment?", scopedEli: Eli.parse("lta/2024/55"), maxSources: 5, onIndexProgress },
+      );
+
+      await vi.advanceTimersByTimeAsync(11_000);
+      await ask;
+
+      expect(onIndexProgress.mock.calls.map(([progress]) => progress.elapsedMs)).toEqual([5_000, 10_000, 15_000]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

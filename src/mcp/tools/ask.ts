@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Eli } from "@/services/retsinformation/eli";
 import { type AskDocumentDependencies, askDocument } from "@/services/retsinformation/service";
-import type { IngestProgress } from "@/services/retsinformation/types";
+import type { IndexProgress } from "@/services/retsinformation/types";
 import { presentMcpResult } from "../result";
 
 const DEFAULT_MAX_SOURCES = 8;
@@ -11,8 +11,8 @@ const MAX_SOURCES = 25;
 /**
  * Registers the `lexdania_ask_document` tool to the MCP server.
  *
- * @param server - The target MCP server instance.
- * @param deps - Required dependencies for document Q&A operations.
+ * @param server - The target MCP server instance
+ * @param deps - Required dependencies for document Q&A operations
  */
 export function registerAskTool(server: McpServer, deps: AskDocumentDependencies): void {
   server.registerTool(
@@ -41,10 +41,10 @@ export function registerAskTool(server: McpServer, deps: AskDocumentDependencies
     },
     (args, extra) => {
       const progressToken = extra._meta?.progressToken;
-      const onIngestProgress =
+      const onIndexProgress =
         progressToken === undefined
           ? undefined
-          : (progress: IngestProgress) => {
+          : (progress: IndexProgress) => {
               extra
                 .sendNotification({
                   method: "notifications/progress",
@@ -57,7 +57,7 @@ export function registerAskTool(server: McpServer, deps: AskDocumentDependencies
           question: args.question,
           scopedEli: args.eli ? Eli.parse(args.eli) : undefined,
           maxSources: args.maxSources ?? DEFAULT_MAX_SOURCES,
-          onIngestProgress,
+          onIndexProgress,
         });
         return {
           answer: result.answer,

@@ -1,6 +1,34 @@
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { createMcpHandler } from "agents/mcp";
+import { createLawSource, createLegislationCorpus } from "@/composition";
 import { validateBearerAuth } from "@/http/auth";
+import { handleResolve } from "@/http/resolver";
 import { createServer } from "@/mcp/server";
+
+/**
+ * Internal membership/indexing resolver served through Workers Caching (see the
+ * `exports` map in wrangler.jsonc). A cache hit answers membership without
+ * listing the File Search store; concurrent misses for the same ELI collapse
+ * onto a single indexing operation. Reachable only via `ctx.exports`, never routed publicly.
+ */
+export class DocumentResolver extends WorkerEntrypoint<Env> {
+  /**
+   * Resolves a `resolve-document/<eli>` loopback request to the corpus document name.
+   *
+   * @param request - The loopback GET request identifying the ELI
+   * @returns A promise resolving to the resolver response with explicit cacheability headers
+   */
+  override async fetch(request: Request): Promise<Response> {
+    return handleResolve(
+      {
+        lawSource: createLawSource(this.ctx),
+        legislationCorpus: createLegislationCorpus(this.env),
+        waitUntil: (promise) => this.ctx.waitUntil(promise),
+      },
+      request,
+    );
+  }
+}
 
 /**
  * Worker entry. Routing and auth are transport concerns; everything below /mcp

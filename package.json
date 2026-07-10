@@ -29,7 +29,7 @@
     "@biomejs/biome": "2.5.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9",
-    "wrangler": "^4.105.0"
+    "wrangler": "^4.110.0"
   },
   "pnpm": {
     "peerDependencyRules": {

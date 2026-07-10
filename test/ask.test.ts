@@ -4,15 +4,16 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { describe, expect, it, vi } from "vitest";
 import { registerAskTool } from "@/mcp/tools/ask";
 import type { Eli } from "@/services/retsinformation/eli";
-import type { IngestProgress, LawSource, LegislationCorpus } from "@/services/retsinformation/types";
+import type { IndexProgress, LawSource, LegislationCorpus } from "@/services/retsinformation/types";
 
-/** A corpus whose cold ingest emits two progress reports before completing. */
+/** A corpus whose cold indexing emits two progress reports before completing. */
 function createSlowIngestCorpus(): LegislationCorpus {
   return {
-    has: vi.fn().mockResolvedValue(false),
-    ingest: vi.fn().mockImplementation(async (eli: Eli, _pdf: Blob, onProgress?: (progress: IngestProgress) => void) => {
+    find: vi.fn().mockResolvedValue(undefined),
+    index: vi.fn().mockImplementation(async (eli: Eli, _pdf: Blob, onProgress?: (progress: IndexProgress) => void) => {
       onProgress?.({ elapsedMs: 0, totalMs: 120_000, message: `Uploaded ${eli.id}; awaiting File Search processing` });
-      onProgress?.({ elapsedMs: 5_000, totalMs: 120_000, message: `Ingesting ${eli.id}` });
+      onProgress?.({ elapsedMs: 5_000, totalMs: 120_000, message: `Indexing ${eli.id}` });
+      return `fileSearchStores/test/documents/${eli.id}`;
     }),
     answer: vi.fn().mockResolvedValue({ answer: "ok", citations: [] }),
   } as unknown as LegislationCorpus;
@@ -31,7 +32,7 @@ async function connectAskTool(legislationCorpus: LegislationCorpus): Promise<Cli
 }
 
 describe("lexdania_ask_document progress notifications", () => {
-  it("emits notifications/progress during a cold ingest when the request carries a progress token", async () => {
+  it("emits notifications/progress during a cold indexing when the request carries a progress token", async () => {
     const client = await connectAskTool(createSlowIngestCorpus());
 
     const progressUpdates: { progress: number; total?: number; message?: string }[] = [];
@@ -46,7 +47,7 @@ describe("lexdania_ask_document progress notifications", () => {
     ]);
   });
 
-  it("completes a cold ingest ask without progress when no progress token is sent", async () => {
+  it("completes a cold indexing ask without progress when no progress token is sent", async () => {
     const client = await connectAskTool(createSlowIngestCorpus());
 
     const result = await client.callTool({ name: "lexdania_ask_document", arguments: { question: "Hvad siger loven?", eli: "lta/2024/48" } });
@@ -58,8 +59,8 @@ describe("lexdania_ask_document progress notifications", () => {
 describe("lexdania_ask_document maxSources", () => {
   function createAnswerCorpus(): LegislationCorpus {
     return {
-      has: vi.fn().mockResolvedValue(true),
-      ingest: vi.fn(),
+      find: vi.fn().mockResolvedValue("fileSearchStores/test/documents/doc-1"),
+      index: vi.fn(),
       answer: vi.fn().mockResolvedValue({ answer: "ok", citations: [] }),
     } as unknown as LegislationCorpus;
   }

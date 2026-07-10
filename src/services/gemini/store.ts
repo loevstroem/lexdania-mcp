@@ -1,11 +1,11 @@
 import type { CustomMetadata, GoogleGenAI, Interactions } from "@google/genai";
 import type { Eli } from "@/services/retsinformation/eli";
-import type { Citation, GroundedAnswer, IngestProgressReporter, LegislationCorpus } from "@/services/retsinformation/types";
+import { type Citation, type GroundedAnswer, INDEX_BUDGET_MS, type IndexProgressReporter, type LegislationCorpus } from "@/services/retsinformation/types";
 
 /**
  * Configuration options for the Gemini-backed legislation corpus.
  */
-export interface GeminiAnswerStoreConfig {
+export interface GeminiLegislationCorpusConfig {
   /** Resource name of the persistent File Search store, e.g. "fileSearchStores/abc". */
   storeName: string;
   /** Generation model, e.g. "gemini-3.5-flash". */
@@ -14,13 +14,9 @@ export interface GeminiAnswerStoreConfig {
 
 const ELI_METADATA_KEY = "eli";
 const POLL_INTERVAL_MS = 5000;
-// Cap the ingest poll to bound client-facing tool latency (Workers bill CPU
-// time, not wall time, so the polling itself is essentially free).
-const MAX_INGEST_MS = 120_000;
-
-// Best-effort, per-isolate cache of ingested ELIs. NOT shared across isolates and
-// never invalidated — treat it as an optimization over has(), not a source of truth.
-const knownIngested = new Set<string>();
+// The shared budget caps the index poll to bound client-facing tool latency
+// (Workers bill CPU time, not wall time, so the polling itself is essentially free).
+const MAX_INDEX_MS = INDEX_BUDGET_MS;
 
 /**
  * An implementation of the `LegislationCorpus` interface backed by
@@ -38,42 +34,43 @@ export class GeminiLegislationCorpus implements LegislationCorpus {
    */
   constructor(
     private readonly ai: GoogleGenAI,
-    private readonly config: GeminiAnswerStoreConfig,
+    private readonly config: GeminiLegislationCorpusConfig,
   ) {}
 
   /**
-   * Checks if a document (ELI) is already present in the File Search store.
-   * Uses a local per-isolate set cache as an initial quick check.
+   * Resolves a document (ELI) to its File Search document name if present.
    *
-   * @param eli - The normalized ELI identifier of the document.
-   * @returns A promise resolving to true if the document exists in the store, false otherwise.
+   * @param eli - The normalized ELI identifier of the document
+   * @returns A promise resolving to the document resource name, or undefined when absent
    */
-  async has(eli: Eli): Promise<boolean> {
-    if (knownIngested.has(eli.id)) return true;
+  async find(eli: Eli): Promise<string | undefined> {
     const pager = await this.ai.fileSearchStores.documents.list({
       parent: this.config.storeName,
       config: { pageSize: 20 },
     });
     for await (const doc of pager) {
-      const storedEliId = doc.customMetadata?.find((m) => m.key === ELI_METADATA_KEY)?.stringValue;
+      const storedEliId = doc.customMetadata?.find((meta) => meta.key === ELI_METADATA_KEY)?.stringValue;
       if (doc.displayName === eli.id || storedEliId === eli.id) {
-        knownIngested.add(eli.id);
-        return true;
+        // The API guarantees a resource name; fall back to the ELI id so a
+        // matched document is never mistaken for a missing one.
+        const documentName = doc.name ?? eli.id;
+        return documentName;
       }
     }
-    return false;
+    return undefined;
   }
 
   /**
-   * Ingests a PDF document by uploading it to the Gemini File Search store.
+   * Indexes a PDF document by uploading it to the Gemini File Search store.
    * Blocks and polls the operation until processing completes or the deadline is reached.
    *
-   * @param eli - The normalized ELI identifier of the document.
-   * @param pdf - The document PDF binary as a Blob.
-   * @param onProgress - Optional reporter invoked once per poll iteration.
-   * @throws An error if ingestion does not complete within the maximum timeout duration.
+   * @param eli - The normalized ELI identifier of the document
+   * @param pdf - The document PDF binary as a Blob
+   * @param [onProgress] - Optional reporter invoked once per poll iteration
+   * @returns A promise resolving to the created document resource name
+   * @throws An error if indexing fails or does not complete within the maximum timeout duration
    */
-  async ingest(eli: Eli, pdf: Blob, onProgress?: IngestProgressReporter): Promise<void> {
+  async index(eli: Eli, pdf: Blob, onProgress?: IndexProgressReporter): Promise<string> {
     const customMetadata: CustomMetadata[] = [{ key: ELI_METADATA_KEY, stringValue: eli.id }];
     let operation = await this.ai.fileSearchStores.uploadToFileSearchStore({
       file: pdf,
@@ -81,30 +78,36 @@ export class GeminiLegislationCorpus implements LegislationCorpus {
       config: { displayName: eli.id, customMetadata },
     });
     const startedAt = Date.now();
-    const deadline = startedAt + MAX_INGEST_MS;
-    onProgress?.({ elapsedMs: 0, totalMs: MAX_INGEST_MS, message: `Uploaded ${eli.id}; awaiting File Search processing` });
+    const deadline = startedAt + MAX_INDEX_MS;
+    onProgress?.({ elapsedMs: 0, totalMs: MAX_INDEX_MS, message: `Uploaded ${eli.id}; awaiting File Search processing` });
     while (!operation.done) {
       if (Date.now() >= deadline) {
-        throw new Error(`Ingestion of ${eli.id} did not finish within ${MAX_INGEST_MS}ms`);
+        throw new Error(`Indexing of ${eli.id} did not finish within ${MAX_INDEX_MS}ms`);
       }
       await sleep(POLL_INTERVAL_MS);
       operation = await this.ai.operations.get({ operation });
       onProgress?.({
-        elapsedMs: Math.min(Date.now() - startedAt, MAX_INGEST_MS),
-        totalMs: MAX_INGEST_MS,
-        message: operation.done ? `Ingested ${eli.id} into File Search` : `Ingesting ${eli.id} into File Search`,
+        elapsedMs: Math.min(Date.now() - startedAt, MAX_INDEX_MS),
+        totalMs: MAX_INDEX_MS,
+        message: operation.done ? `Indexed ${eli.id} into File Search` : `Indexing ${eli.id} into File Search`,
       });
     }
-    knownIngested.add(eli.id);
+    if (operation.error) {
+      const message = typeof operation.error.message === "string" ? operation.error.message : JSON.stringify(operation.error);
+      throw new Error(`Indexing of ${eli.id} failed: ${message}`);
+    }
+    const documentName = operation.response?.documentName;
+    if (!documentName) throw new Error(`Indexing of ${eli.id} completed without a document name`);
+    return documentName;
   }
 
   /**
    * Answers a free-text question against the corpus using Gemini File Search.
    *
-   * @param question - The natural language query.
-   * @param scopedEli - Optional ELI identifier to restrict search to a single document.
-   * @param maxSources - Maximum number of unique citations to return.
-   * @returns A promise resolving to the grounded response containing text and citations.
+   * @param question - The natural language query
+   * @param [scopedEli] - Optional ELI identifier to restrict search to a single document
+   * @param maxSources - Maximum number of unique citations to return
+   * @returns A promise resolving to the grounded response containing text and citations
    */
   async answer(question: string, scopedEli: Eli | undefined, maxSources: number): Promise<GroundedAnswer> {
     const fileSearch = {
@@ -148,23 +151,23 @@ export class GeminiLegislationCorpus implements LegislationCorpus {
 /**
  * Translates a raw Gemini file citation annotation into a domain-specific Citation.
  *
- * @param annotation - The file citation annotation from the Interactions API.
- * @returns A normalized Citation object.
+ * @param fileCitation - The file citation annotation from the Interactions API
+ * @returns A normalized Citation object
  */
-function toDomainCitation(annotation: Interactions.FileCitation): Citation {
-  const storedEliId = annotation.custom_metadata?.[ELI_METADATA_KEY];
+function toDomainCitation(fileCitation: Interactions.FileCitation): Citation {
+  const storedEliId = fileCitation.custom_metadata?.[ELI_METADATA_KEY];
   return {
-    eli: typeof storedEliId === "string" ? storedEliId : (annotation.file_name ?? ""),
-    title: annotation.file_name,
-    sectionPath: annotation.page_number !== undefined ? `p.${annotation.page_number}` : undefined,
-    snippet: annotation.source,
+    eli: typeof storedEliId === "string" ? storedEliId : (fileCitation.file_name ?? ""),
+    title: fileCitation.file_name,
+    sectionPath: fileCitation.page_number !== undefined ? `p.${fileCitation.page_number}` : undefined,
+    snippet: fileCitation.source,
   };
 }
 
 /**
  * Utility helper to pause execution for a given number of milliseconds.
  *
- * @param ms - Milliseconds to sleep.
+ * @param ms - Milliseconds to sleep
  */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
