@@ -1,4 +1,4 @@
-import type { QueryResult, StructureProfile, XmlInspector } from "@/services/lexdania/types";
+import type { QueryOptions, QueryResult, StructureProfile, XmlInspector } from "@/services/lexdania/types";
 import { Eli } from "./eli";
 import { ResolverUnavailableError, resolveDocument } from "./resolver";
 import { type GroundedAnswer, INDEX_BUDGET_MS, type IndexProgressReporter, type LawSource, type LegislationCorpus } from "./types";
@@ -148,13 +148,13 @@ export interface QueryDocumentDependencies {
 export interface QueryDocumentRequest {
   eli: Eli;
   xpath: string;
-  limit: number;
+  options: QueryOptions;
 }
 
 /** Run an exact, namespace-aware XPath query against one law's LexDania XML. */
 export async function queryDocument(deps: QueryDocumentDependencies, request: QueryDocumentRequest): Promise<QueryResult> {
   const xml = await deps.lawSource.fetchXml(request.eli);
-  return deps.xmlInspector.query(xml, request.xpath, request.limit);
+  return deps.xmlInspector.query(xml, request.xpath, request.options);
 }
 
 export interface ProfileDocumentDependencies {
