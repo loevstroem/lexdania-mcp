@@ -54,3 +54,42 @@ describe("lexdania_ask_document progress notifications", () => {
     expect(result.isError).toBeFalsy();
   });
 });
+
+describe("lexdania_ask_document maxSources", () => {
+  function createAnswerCorpus(): LegislationCorpus {
+    return {
+      has: vi.fn().mockResolvedValue(true),
+      ingest: vi.fn(),
+      answer: vi.fn().mockResolvedValue({ answer: "ok", citations: [] }),
+    } as unknown as LegislationCorpus;
+  }
+
+  it("rejects maxSources above 25 with a schema error", async () => {
+    const client = await connectAskTool(createAnswerCorpus());
+
+    const result = await client.callTool({ name: "lexdania_ask_document", arguments: { question: "Hvad siger loven?", maxSources: 26 } });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("maxSources");
+  });
+
+  it("accepts maxSources at the cap", async () => {
+    const legislationCorpus = createAnswerCorpus();
+    const client = await connectAskTool(legislationCorpus);
+
+    const result = await client.callTool({ name: "lexdania_ask_document", arguments: { question: "Hvad siger loven?", maxSources: 25 } });
+
+    expect(result.isError).toBeFalsy();
+    expect(legislationCorpus.answer).toHaveBeenCalledWith("Hvad siger loven?", undefined, 25);
+  });
+
+  it("defaults maxSources to 8 when omitted", async () => {
+    const legislationCorpus = createAnswerCorpus();
+    const client = await connectAskTool(legislationCorpus);
+
+    const result = await client.callTool({ name: "lexdania_ask_document", arguments: { question: "Hvad siger loven?" } });
+
+    expect(result.isError).toBeFalsy();
+    expect(legislationCorpus.answer).toHaveBeenCalledWith("Hvad siger loven?", undefined, 8);
+  });
+});

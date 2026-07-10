@@ -68,21 +68,25 @@ export async function askDocument(deps: AskDocumentDependencies, request: AskDoc
   const result = await legislationCorpus.answer(request.question, scopedEli, request.maxSources);
 
   // Post-process citations to enrich their titles from JSON-LD metadata in parallel
-  const enrichedCitations = await Promise.all(
-    result.citations.map(async (citation) => {
-      try {
-        const eli = Eli.parse(citation.eli);
-        const metadata = await metadataDocument({ lawSource }, { eli });
-        return {
-          ...citation,
-          title: metadata.title || citation.title,
-        };
-      } catch {
-        // Fallback to existing title (typically the ELI ID) on any fetch/parse error
-        return citation;
-      }
-    }),
+  const distinctElis = [...new Set(result.citations.map((citation) => citation.eli))];
+  const titlesByEli = new Map(
+    await Promise.all(
+      distinctElis.map(async (rawEli): Promise<[string, string | undefined]> => {
+        try {
+          const metadata = await metadataDocument({ lawSource }, { eli: Eli.parse(rawEli) });
+          return [rawEli, metadata.title];
+        } catch {
+          // Fallback to existing title (typically the ELI ID) on any fetch/parse error
+          return [rawEli, undefined];
+        }
+      }),
+    ),
   );
+
+  const enrichedCitations = result.citations.map((citation) => ({
+    ...citation,
+    title: titlesByEli.get(citation.eli) || citation.title,
+  }));
 
   return {
     answer: result.answer,
@@ -237,6 +241,8 @@ function getElisArray(item: Record<string, unknown>, predicate: string): string[
   return elis;
 }
 
+export const MAX_COMPARE_ELIS = 5;
+
 export interface CompareStructureDependencies {
   lawSource: LawSource;
   xmlInspector: XmlInspector;
@@ -266,13 +272,14 @@ export async function compareStructureDocument(deps: CompareStructureDependencie
   if (request.elis.length < 2) {
     throw new Error("Must provide at least 2 ELIs for structure comparison");
   }
+  if (request.elis.length > MAX_COMPARE_ELIS) {
+    throw new Error(`Must provide at most ${MAX_COMPARE_ELIS} ELIs for structure comparison`);
+  }
 
-  const profiles = await Promise.all(
-    request.elis.map(async (eli) => {
-      const profile = await profileDocument(deps, { eli, top: 0 });
-      return { eliId: eli.id, profile };
-    }),
-  );
+  const profiles: { eliId: string; profile: StructureProfile }[] = [];
+  for (const eli of request.elis) {
+    profiles.push({ eliId: eli.id, profile: await profileDocument(deps, { eli, top: 0 }) });
+  }
 
   const allElements = new Set<string>();
   const allAttributes = new Set<string>();

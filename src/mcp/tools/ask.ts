@@ -6,6 +6,7 @@ import type { IngestProgress } from "@/services/retsinformation/types";
 import { presentMcpResult } from "../result";
 
 const DEFAULT_MAX_SOURCES = 8;
+const MAX_SOURCES = 25;
 
 /**
  * Registers the `lexdania_ask_document` tool to the MCP server.
@@ -22,7 +23,7 @@ export function registerAskTool(server: McpServer, deps: AskDocumentDependencies
       inputSchema: {
         question: z.string().min(1).describe("Natural language query."),
         eli: z.string().optional().describe("Filter to single document (URI/path) or omit for entire corpus."),
-        maxSources: z.number().int().positive().optional().describe("Max citations to return (default: 8)."),
+        maxSources: z.number().int().positive().max(MAX_SOURCES).optional().describe(`Max citations to return (default: ${DEFAULT_MAX_SOURCES}, max: ${MAX_SOURCES}).`),
       },
       outputSchema: {
         answer: z.string().describe("Answer grounded in document text."),

@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Eli } from "@/services/retsinformation/eli";
-import { type CompareStructureDependencies, compareStructureDocument } from "@/services/retsinformation/service";
+import { type CompareStructureDependencies, compareStructureDocument, MAX_COMPARE_ELIS } from "@/services/retsinformation/service";
 import { presentMcpResult } from "../result";
 
 /**
@@ -18,7 +18,7 @@ export function registerCompareTool(server: McpServer, deps: CompareStructureDep
       description:
         "Diffs structural elements and attributes across 2 or more LexDania XML documents to detect parser drift, showing which tags/attributes are in each, and which are unique to specific documents.",
       inputSchema: {
-        elis: z.array(z.string()).min(2).describe("List of 2 or more document ELI paths or URLs to compare."),
+        elis: z.array(z.string()).min(2).max(MAX_COMPARE_ELIS).describe(`List of 2 to ${MAX_COMPARE_ELIS} document ELI paths or URLs to compare.`),
       },
       outputSchema: {
         elements: z
