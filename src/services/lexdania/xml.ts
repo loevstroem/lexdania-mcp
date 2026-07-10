@@ -227,9 +227,9 @@ function directChildTagCounts(node: unknown): Record<string, number> {
   const xmlNode = node as Partial<XmlNode>;
   if (xmlNode.nodeType !== ELEMENT_NODE) return {};
 
-  const counts: Record<string, number> = {};
-  for (const child of childElements(node as XmlElement)) counts[child.tagName] = (counts[child.tagName] ?? 0) + 1;
-  return counts;
+  const counts = new Map<string, number>();
+  for (const child of childElements(node as XmlElement)) counts.set(child.tagName, (counts.get(child.tagName) ?? 0) + 1);
+  return Object.fromEntries(counts);
 }
 
 /**

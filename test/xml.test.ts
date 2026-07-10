@@ -193,6 +193,24 @@ describe("LexDaniaXmlInspector.query", () => {
 
     expect(result.matches[0]).toMatchObject({ kind: "stub", childTagCounts: {} });
   });
+
+  it("counts prototype-named direct children in a stub", () => {
+    const xml = "<Root><constructor/><constructor/><toString/><__proto__/><__proto__/><__proto__/></Root>";
+    const result = inspector.query(xml, "/*", {
+      limit: 1,
+      format: "both",
+      maxNodeBytes: 1,
+    });
+    const match = result.matches[0];
+
+    expect(match?.kind).toBe("stub");
+    if (match?.kind !== "stub") throw new Error("Expected an oversize stub");
+    expect(Object.entries(match.childTagCounts)).toEqual([
+      ["constructor", 2],
+      ["toString", 1],
+      ["__proto__", 3],
+    ]);
+  });
 });
 
 describe("LexDaniaXmlInspector.profile", () => {
