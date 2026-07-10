@@ -110,8 +110,8 @@ export interface XmlInspector {
   /**
    * Evaluates an XPath expression against the provided XML content.
    *
-   * @param xml - The raw LexDania XML payload.
-   * @param xpath - The namespace-aware XPath query string.
+   * @param xml - The raw LexDania XML payload
+   * @param xpath - The namespace-aware XPath query string
    * @param options - Query result selection options
    * @returns Query execution results
    */

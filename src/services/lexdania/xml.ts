@@ -13,8 +13,8 @@ export class LexDaniaXmlInspector implements XmlInspector {
   /**
    * Evaluates an XPath expression against the XML payload.
    *
-   * @param xml - The raw XML string of the document.
-   * @param expression - The namespace-aware XPath expression to evaluate.
+   * @param xml - The raw XML string of the document
+   * @param expression - The namespace-aware XPath expression to evaluate
    * @param options - Query result selection options
    * @returns Query results containing matches or a scalar value
    */
