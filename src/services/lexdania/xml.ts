@@ -1,9 +1,11 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import * as xpath from "xpath";
 import { ATTRIBUTE_NODE, CDATA_NODE, ELEMENT_NODE, TEXT_NODE, type XmlAttr, type XmlDocument, type XmlElement, type XmlNode } from "./dom";
-import type { FullQueryMatch, QueryOptions, QueryResult, StructureProfile, XmlInspector } from "./types";
+import type { FullQueryMatch, OversizeQueryMatch, QueryOptions, QueryResult, StructureProfile, XmlInspector } from "./types";
 
 type Selector = (expression: string, node: unknown) => unknown;
+
+const OVERSIZE_HINT = "Matched node exceeds maxNodeBytes; narrow the XPath or raise maxNodeBytes.";
 
 /**
  * Namespace-aware XPath parser and structural profiling inspector for LexDania XML.
@@ -34,14 +36,28 @@ export class LexDaniaXmlInspector implements XmlInspector {
     const count = nodes.length;
     const sliceLimit = options.limit <= 0 ? 0 : options.limit;
     const serializer = new XMLSerializer();
-    const matches = nodes.slice(0, sliceLimit).map((node): FullQueryMatch => {
-      const xmlNode = node as Partial<XmlAttr> & Partial<XmlElement> & { nodeName?: string };
+    const matches = nodes.slice(0, sliceLimit).map((node): FullQueryMatch | OversizeQueryMatch => {
+      const ancestry = { path: "", elements: [], explicatus: [] };
+      const serialized = serializeNode(node, serializer);
+      const approxBytes = new TextEncoder().encode(serialized).byteLength;
+      const tag = nodeTag(node);
+      if (approxBytes > options.maxNodeBytes) {
+        return {
+          kind: "stub",
+          tag,
+          approxBytes,
+          childTagCounts: directChildTagCounts(node),
+          hint: OVERSIZE_HINT,
+          ancestry,
+        };
+      }
+
       const match: FullQueryMatch = {
         kind: "match",
-        tag: xmlNode.tagName ?? xmlNode.name ?? xmlNode.nodeName ?? "",
-        ancestry: { path: "", elements: [], explicatus: [] },
+        tag,
+        ancestry,
       };
-      if (options.format !== "text") match.xml = serializeNode(node, serializer);
+      if (options.format !== "text") match.xml = serialized;
       if (options.format !== "xml") match.text = collapseWhitespace(getNodeText(node));
       return match;
     });
@@ -185,6 +201,35 @@ function serializeNode(node: unknown, serializer: XMLSerializer): string {
   }
   if (xmlNode.nodeType === undefined) return String(node); // scalar result
   return serializer.serializeToString(node as never);
+}
+
+/**
+ * Returns the diagnostic tag for an XPath node.
+ *
+ * @param node - XPath result node
+ * @returns Qualified diagnostic tag
+ */
+function nodeTag(node: unknown): string {
+  const xmlNode = node as Partial<XmlAttr> & Partial<XmlElement> & Partial<XmlNode> & { nodeName?: string };
+  if (xmlNode.nodeType === ATTRIBUTE_NODE) return `@${xmlNode.name ?? ""}`;
+  if (xmlNode.nodeType === TEXT_NODE) return "#text";
+  if (xmlNode.nodeType === CDATA_NODE) return "#cdata-section";
+  return xmlNode.tagName ?? xmlNode.nodeName ?? "";
+}
+
+/**
+ * Counts direct element children by qualified tag name.
+ *
+ * @param node - XPath result node
+ * @returns Direct child tag frequencies
+ */
+function directChildTagCounts(node: unknown): Record<string, number> {
+  const xmlNode = node as Partial<XmlNode>;
+  if (xmlNode.nodeType !== ELEMENT_NODE) return {};
+
+  const counts: Record<string, number> = {};
+  for (const child of childElements(node as XmlElement)) counts[child.tagName] = (counts[child.tagName] ?? 0) + 1;
+  return counts;
 }
 
 /**

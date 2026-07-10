@@ -127,6 +127,72 @@ describe("LexDaniaXmlInspector.query", () => {
 
     expect(result.matches[0]).toMatchObject({ kind: "match", tag: "Stk", text: "A", xml: "<Stk>A</Stk>" });
   });
+
+  it("returns an ordered UTF-8 size stub before text extraction", () => {
+    const serializedXml = "<Section>æøå<Child/><Child/><Other><Child/></Other></Section>";
+    const xml = `<Root>${serializedXml}<Tail>ok</Tail><Later>ignored</Later></Root>`;
+    const approxBytes = new TextEncoder().encode(serializedXml).byteLength;
+
+    const result = inspector.query(xml, "/*/*", {
+      limit: 2,
+      format: "text",
+      maxNodeBytes: approxBytes - 1,
+    });
+
+    expect(result.count).toBe(3);
+    expect(result.matches).toHaveLength(2);
+    expect(result.matches[0]).toEqual({
+      kind: "stub",
+      tag: "Section",
+      approxBytes,
+      childTagCounts: { Child: 2, Other: 1 },
+      hint: "Matched node exceeds maxNodeBytes; narrow the XPath or raise maxNodeBytes.",
+      ancestry: { path: "", elements: [], explicatus: [] },
+    });
+    expect(result.matches[0]).not.toHaveProperty("xml");
+    expect(result.matches[0]).not.toHaveProperty("text");
+    expect(result.matches[1]).toMatchObject({ kind: "match", tag: "Tail", text: "ok" });
+  });
+
+  it("returns a full hit when size equals the override", () => {
+    const serializedXml = "<Section>æøå<Child/><Child/><Other><Child/></Other></Section>";
+    const approxBytes = new TextEncoder().encode(serializedXml).byteLength;
+
+    const result = inspector.query(`<Root>${serializedXml}</Root>`, "//Section", {
+      limit: 1,
+      format: "text",
+      maxNodeBytes: approxBytes,
+    });
+
+    expect(result.matches[0]).toMatchObject({ kind: "match", tag: "Section", text: "æøå" });
+  });
+
+  it("keeps a synthetic large-root stub below 2 KB", () => {
+    const xml = `<Root>${"<Section><Nested/></Section>".repeat(5_000)}</Root>`;
+
+    const result = inspector.query(xml, "/*", {
+      limit: 1,
+      format: "both",
+      maxNodeBytes: 1_024,
+    });
+
+    expect(result.matches[0]).toMatchObject({
+      kind: "stub",
+      tag: "Root",
+      childTagCounts: { Section: 5_000 },
+    });
+    expect(new TextEncoder().encode(JSON.stringify(result.matches[0])).byteLength).toBeLessThan(2_048);
+  });
+
+  it("returns empty child tag counts for a non-element stub", () => {
+    const result = inspector.query('<Root note="æøå"/>', "//@note", {
+      limit: 1,
+      format: "both",
+      maxNodeBytes: 1,
+    });
+
+    expect(result.matches[0]).toMatchObject({ kind: "stub", childTagCounts: {} });
+  });
 });
 
 describe("LexDaniaXmlInspector.profile", () => {
