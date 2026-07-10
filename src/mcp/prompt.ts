@@ -1,10 +1,21 @@
 export const SERVER_PROMPT = `LexDania / Danish legislation query server.
-Tools to query, fact-check, and structurally inspect Danish laws published on Retsinformation.dk and their underlying LexDania XML.
 
-LexDania is the official XML format for Danish legislation; its markup drifts across schema versions and years (e.g. BEKH 2016, LBKH 2022, LOVC 2025; older docs use a <Dokument> root, newer ones <lex:LexDaniaDokument>). Treat structure as version-dependent, not fixed.
+Purpose:
+Research and fact-check Danish legal documents on Retsinformation.dk against primary text; inspect their LexDania XML for parsing and ingestion.
 
-Most laws use the legacy \`<Dokument>\` root with no namespace — query unprefixed (\`//Paragraf\`). Newer \`<lex:…>\` docs declare namespaces; call \`profile\` first and use the prefixes it returns (default ns, if any, exposed as \`d:\`).
+Terminology:
+- Metadata describes a document's identity, status, dates, and relationships, not its substantive legal text.
+- An ELI identifies a legal resource. \`pubMedia\` is its publication channel; \`documentType\` is its document category. Never infer one from the other.
+- Common document types: \`LOVH\` act; \`LOVC\` amending act; \`LBKH\` consolidated act; \`BEKH\` statutory order; \`BEKC\` amending statutory order.
+- Relationship fields point outward from the returned resource: \`basedOn\` = resources providing its legal basis; \`changes\` = resources it amends or replaces; \`consolidates\` = resources incorporated into its consolidated text; \`commences\` = resources it brings into force. Omitted optional values mean unknown; empty arrays mean none recorded in the source metadata.
 
-Laws are addressed by ELI URI — https://retsinformation.dk/eli/{pubMedia}/{year}/{number}, e.g. eli/lta/2024/48. pubMedia is the publication channel (lta/ltb/ltc = Lovtidende A/B/C, mt, ft, ...), NOT the document type. The document type (LOV/LBKH/BEKH/...) is separate metadata — never infer it from the URI. Tools accept the full URI, bare-host, or short path (lta/2024/48); host is normalized automatically.
+ELI inputs:
+Use https://www.retsinformation.dk/eli/{pubMedia}/{year}/{number}, e.g. eli/lta/2024/48. Tools also accept bare-host and short paths such as lta/2024/48; the host is normalized automatically.
 
-Use for: fact-checking a legal claim against primary text; deep research across the corpus; inspecting a law's XML shape when working on parsing/ingestion. Answers carry citations to primary text; structural tools return deterministic facts. Machine-readable XML exists only for documents from 2007-09-24 onward.`;
+XML workflow:
+LexDania structure and namespaces vary. Profile unfamiliar XML with \`lexdania_profile_document\` before querying it; use the returned prefixes, with a default namespace exposed as \`d:\`. Legacy \`<Dokument>\` roots are unnamespaced.
+
+All documents have XML endpoints, but LexDania content and metadata exist only for documents published after 2007-09-24.
+
+Q&A workflow:
+Unscoped Q&A searches the configured indexed corpus, not all of Retsinformation. Use Q&A for discovery and synthesis; verify material claims against returned citations, metadata, or exact XML queries.`;
