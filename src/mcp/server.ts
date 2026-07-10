@@ -19,7 +19,12 @@ import { registerStructureTool } from "./tools/structure";
  * @returns The configured McpServer instance.
  */
 export function createServer(env: Env, ctx: ExecutionContext): McpServer {
-  const lawSource = new RetsinformationClient();
+  // Namespaced handle instead of `caches.default`: keeps entries isolated and
+  // sidesteps lib.dom's CacheStorage typing (pulled in by xpath), which lacks `default`.
+  const lawSource = new RetsinformationClient({
+    cache: caches.open("retsinformation"),
+    waitUntil: (promise) => ctx.waitUntil(promise),
+  });
   const xmlInspector = new LexDaniaXmlInspector();
   const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
   const legislationCorpus = new GeminiLegislationCorpus(ai, {
