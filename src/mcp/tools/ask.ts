@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Eli } from "@/services/retsinformation/eli";
 import { type AskDocumentDependencies, askDocument } from "@/services/retsinformation/service";
+import type { IngestProgress } from "@/services/retsinformation/types";
 import { presentMcpResult } from "../result";
 
 const DEFAULT_MAX_SOURCES = 8;
@@ -37,12 +38,25 @@ export function registerAskTool(server: McpServer, deps: AskDocumentDependencies
           .describe("Supporting text citations."),
       },
     },
-    (args) =>
-      presentMcpResult(async () => {
+    (args, extra) => {
+      const progressToken = extra._meta?.progressToken;
+      const onIngestProgress =
+        progressToken === undefined
+          ? undefined
+          : (progress: IngestProgress) => {
+              extra
+                .sendNotification({
+                  method: "notifications/progress",
+                  params: { progressToken, progress: progress.elapsedMs, total: progress.totalMs, message: progress.message },
+                })
+                .catch(() => {});
+            };
+      return presentMcpResult(async () => {
         const result = await askDocument(deps, {
           question: args.question,
           scopedEli: args.eli ? Eli.parse(args.eli) : undefined,
           maxSources: args.maxSources ?? DEFAULT_MAX_SOURCES,
+          onIngestProgress,
         });
         return {
           answer: result.answer,
@@ -53,6 +67,7 @@ export function registerAskTool(server: McpServer, deps: AskDocumentDependencies
             snippet: c.snippet,
           })),
         };
-      }),
+      });
+    },
   );
 }

@@ -1,6 +1,6 @@
 import type { CustomMetadata, GoogleGenAI, Interactions } from "@google/genai";
 import type { Eli } from "@/services/retsinformation/eli";
-import type { Citation, GroundedAnswer, LegislationCorpus } from "@/services/retsinformation/types";
+import type { Citation, GroundedAnswer, IngestProgressReporter, LegislationCorpus } from "@/services/retsinformation/types";
 
 /**
  * Configuration options for the Gemini-backed legislation corpus.
@@ -14,8 +14,8 @@ export interface GeminiAnswerStoreConfig {
 
 const ELI_METADATA_KEY = "eli";
 const POLL_INTERVAL_MS = 5000;
-// Cap the ingest poll so a stuck operation can't hold the Worker request open
-// indefinitely (and keep billing duration). The caller surfaces this as a tool error.
+// Cap the ingest poll to bound client-facing tool latency (Workers bill CPU
+// time, not wall time, so the polling itself is essentially free).
 const MAX_INGEST_MS = 120_000;
 
 // Best-effort, per-isolate cache of ingested ELIs. NOT shared across isolates and
@@ -70,22 +70,30 @@ export class GeminiLegislationCorpus implements LegislationCorpus {
    *
    * @param eli - The normalized ELI identifier of the document.
    * @param pdf - The document PDF binary as a Blob.
+   * @param onProgress - Optional reporter invoked once per poll iteration.
    * @throws An error if ingestion does not complete within the maximum timeout duration.
    */
-  async ingest(eli: Eli, pdf: Blob): Promise<void> {
+  async ingest(eli: Eli, pdf: Blob, onProgress?: IngestProgressReporter): Promise<void> {
     const customMetadata: CustomMetadata[] = [{ key: ELI_METADATA_KEY, stringValue: eli.id }];
     let operation = await this.ai.fileSearchStores.uploadToFileSearchStore({
       file: pdf,
       fileSearchStoreName: this.config.storeName,
       config: { displayName: eli.id, customMetadata },
     });
-    const deadline = Date.now() + MAX_INGEST_MS;
+    const startedAt = Date.now();
+    const deadline = startedAt + MAX_INGEST_MS;
+    onProgress?.({ elapsedMs: 0, totalMs: MAX_INGEST_MS, message: `Uploaded ${eli.id}; awaiting File Search processing` });
     while (!operation.done) {
-      if (Date.now() > deadline) {
+      if (Date.now() >= deadline) {
         throw new Error(`Ingestion of ${eli.id} did not finish within ${MAX_INGEST_MS}ms`);
       }
       await sleep(POLL_INTERVAL_MS);
       operation = await this.ai.operations.get({ operation });
+      onProgress?.({
+        elapsedMs: Math.min(Date.now() - startedAt, MAX_INGEST_MS),
+        totalMs: MAX_INGEST_MS,
+        message: operation.done ? `Ingested ${eli.id} into File Search` : `Ingesting ${eli.id} into File Search`,
+      });
     }
     knownIngested.add(eli.id);
   }

@@ -19,7 +19,7 @@ export default {
     if (pathname === "/mcp") {
       const authErrorResponse = validateBearerAuth(request, env.MCP_AUTH_TOKEN);
       if (authErrorResponse) return authErrorResponse;
-      return createMcpHandler(createServer(env), { route: "/mcp" })(request, env, ctx);
+      return createMcpHandler(createServer(env, ctx), { route: "/mcp" })(request, env, ctx);
     }
 
     return new Response("Not Found", { status: 404 });

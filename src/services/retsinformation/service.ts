@@ -1,10 +1,12 @@
 import type { QueryResult, StructureProfile, XmlInspector } from "@/services/lexdania/types";
 import { Eli } from "./eli";
-import type { GroundedAnswer, LawSource, LegislationCorpus } from "./types";
+import type { GroundedAnswer, IngestProgressReporter, LawSource, LegislationCorpus } from "./types";
 
 export interface AskDocumentDependencies {
   lawSource: LawSource;
   legislationCorpus: LegislationCorpus;
+  /** Extends the runtime beyond the response, e.g. `ctx.waitUntil` on Workers. */
+  waitUntil: (promise: Promise<unknown>) => void;
 }
 
 export interface AskDocumentRequest {
@@ -12,12 +14,19 @@ export interface AskDocumentRequest {
   /** When set, only this law is searched; otherwise the whole corpus. */
   scopedEli?: Eli;
   maxSources: number;
+  /** Receives ingest progress while a cold scoped ask fetches and processes the law. */
+  onIngestProgress?: IngestProgressReporter;
 }
 
 // Coalesces concurrent ingestions of the same law within one isolate so parallel
 // tool calls don't upload it twice. Best-effort: requests served by different
 // isolates can still race — store.has() is the durable guard against re-ingesting.
-const pendingIngestions = new Map<string, Promise<void>>();
+interface PendingIngestion {
+  promise: Promise<void>;
+  progressReporters: Set<IngestProgressReporter>;
+}
+
+const pendingIngestions = new Map<string, PendingIngestion>();
 
 /**
  * Answer a free-text question against legislation, with citations.
@@ -29,23 +38,31 @@ export async function askDocument(deps: AskDocumentDependencies, request: AskDoc
   const scopedEli = request.scopedEli;
   if (scopedEli) {
     const eliId = scopedEli.id;
-    let ingestionPromise = pendingIngestions.get(eliId);
-    if (!ingestionPromise) {
+    let pendingIngestion = pendingIngestions.get(eliId);
+    if (!pendingIngestion) {
+      const progressReporters = new Set<IngestProgressReporter>();
+      if (request.onIngestProgress) progressReporters.add(request.onIngestProgress);
       // Clean up inside the awaited promise; a detached `.finally(...)` would be a
       // second, unhandled promise that rejects on every failed ingest.
-      ingestionPromise = (async () => {
+      const ingestionPromise = Promise.resolve().then(async () => {
         try {
           if (!(await legislationCorpus.has(scopedEli))) {
             const pdf = await lawSource.fetchPdf(scopedEli);
-            await legislationCorpus.ingest(scopedEli, pdf);
+            await legislationCorpus.ingest(scopedEli, pdf, (progress) => {
+              for (const reportProgress of progressReporters) reportProgress(progress);
+            });
           }
         } finally {
           pendingIngestions.delete(eliId);
         }
-      })();
-      pendingIngestions.set(eliId, ingestionPromise);
+      });
+      pendingIngestion = { promise: ingestionPromise, progressReporters };
+      pendingIngestions.set(eliId, pendingIngestion);
+    } else if (request.onIngestProgress) {
+      pendingIngestion.progressReporters.add(request.onIngestProgress);
     }
-    await ingestionPromise;
+    deps.waitUntil(pendingIngestion.promise);
+    await pendingIngestion.promise;
   }
 
   const result = await legislationCorpus.answer(request.question, scopedEli, request.maxSources);

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { LexDaniaXmlInspector } from "@/services/lexdania/xml";
 import { Eli } from "@/services/retsinformation/eli";
 import { askDocument, compareStructureDocument, metadataDocument } from "@/services/retsinformation/service";
-import type { LawSource, LegislationCorpus } from "@/services/retsinformation/types";
+import type { IngestProgressReporter, LawSource, LegislationCorpus } from "@/services/retsinformation/types";
 
 // Mock JSON-LD response matching a simplified version of eli-48.json
 const MOCK_JSON_LD = [
@@ -115,10 +115,77 @@ describe("askDocument", () => {
       }),
     } as unknown as LegislationCorpus;
 
-    const result = await askDocument({ lawSource: mockLawSource, legislationCorpus: mockLegislationCorpus }, { question: "What is the environment?", maxSources: 5 });
+    const result = await askDocument({ lawSource: mockLawSource, legislationCorpus: mockLegislationCorpus, waitUntil: vi.fn() }, { question: "What is the environment?", maxSources: 5 });
 
     expect(result.answer).toBe("The environment must be protected.");
     expect(result.citations).toHaveLength(1);
     expect(result.citations[0]?.title).toBe("Bekendtgørelse af lov om miljøbeskyttelse");
+  });
+
+  it("registers a cold ingestion with waitUntil and forwards ingest progress", async () => {
+    const pdf = new Blob(["%PDF"]);
+    const mockLawSource = {
+      fetchPdf: vi.fn().mockResolvedValue(pdf),
+      fetchJson: vi.fn().mockRejectedValue(new Error("no metadata")),
+    } as unknown as LawSource;
+
+    const mockLegislationCorpus = {
+      has: vi.fn().mockResolvedValue(false),
+      ingest: vi.fn().mockImplementation(async (_eli: Eli, _pdf: Blob, onProgress?: (progress: unknown) => void) => {
+        onProgress?.({ elapsedMs: 5_000, totalMs: 120_000, message: "Ingesting eli/lta/2024/48" });
+      }),
+      answer: vi.fn().mockResolvedValue({ answer: "ok", citations: [] }),
+    } as unknown as LegislationCorpus;
+
+    const waitUntil = vi.fn();
+    const onIngestProgress = vi.fn();
+
+    await askDocument(
+      { lawSource: mockLawSource, legislationCorpus: mockLegislationCorpus, waitUntil },
+      { question: "What is the environment?", scopedEli: Eli.parse("lta/2024/48"), maxSources: 5, onIngestProgress },
+    );
+
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    expect(waitUntil.mock.calls[0]?.[0]).toBeInstanceOf(Promise);
+    expect(mockLegislationCorpus.ingest).toHaveBeenCalledWith(expect.objectContaining({ id: "eli/lta/2024/48" }), pdf, expect.any(Function));
+    expect(onIngestProgress).toHaveBeenCalledWith({ elapsedMs: 5_000, totalMs: 120_000, message: "Ingesting eli/lta/2024/48" });
+  });
+
+  it("forwards shared ingestion progress to every waiting caller", async () => {
+    const pdf = new Blob(["%PDF"]);
+    let reportProgress: IngestProgressReporter | undefined;
+    let finishIngest = () => {};
+    const ingestPending = new Promise<void>((resolve) => {
+      finishIngest = resolve;
+    });
+    const mockLawSource = {
+      fetchPdf: vi.fn().mockResolvedValue(pdf),
+      fetchJson: vi.fn().mockRejectedValue(new Error("no metadata")),
+    } as unknown as LawSource;
+    const mockLegislationCorpus = {
+      has: vi.fn().mockResolvedValue(false),
+      ingest: vi.fn().mockImplementation(async (_eli: Eli, _pdf: Blob, onProgress?: IngestProgressReporter) => {
+        reportProgress = onProgress;
+        await ingestPending;
+      }),
+      answer: vi.fn().mockResolvedValue({ answer: "ok", citations: [] }),
+    } as unknown as LegislationCorpus;
+    const eli = Eli.parse("lta/2024/49");
+    const firstProgress = vi.fn();
+    const secondProgress = vi.fn();
+    const deps = { lawSource: mockLawSource, legislationCorpus: mockLegislationCorpus, waitUntil: vi.fn() };
+
+    const firstAsk = askDocument(deps, { question: "First", scopedEli: eli, maxSources: 5, onIngestProgress: firstProgress });
+    await vi.waitUntil(() => reportProgress !== undefined);
+    const secondAsk = askDocument(deps, { question: "Second", scopedEli: eli, maxSources: 5, onIngestProgress: secondProgress });
+
+    const progress = { elapsedMs: 5_000, totalMs: 120_000, message: "Ingesting eli/lta/2024/49" };
+    reportProgress?.(progress);
+    finishIngest();
+    await Promise.all([firstAsk, secondAsk]);
+
+    expect(mockLegislationCorpus.ingest).toHaveBeenCalledTimes(1);
+    expect(firstProgress).toHaveBeenCalledWith(progress);
+    expect(secondProgress).toHaveBeenCalledWith(progress);
   });
 });

@@ -15,9 +15,10 @@ import { registerStructureTool } from "./tools/structure";
  * A fresh server is constructed per request to prevent cross-client instance sharing.
  *
  * @param env - The Cloudflare Worker environment variables.
+ * @param ctx - The execution context of the current request.
  * @returns The configured McpServer instance.
  */
-export function createServer(env: Env): McpServer {
+export function createServer(env: Env, ctx: ExecutionContext): McpServer {
   const lawSource = new RetsinformationClient();
   const xmlInspector = new LexDaniaXmlInspector();
   const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
@@ -28,7 +29,7 @@ export function createServer(env: Env): McpServer {
 
   const server = new McpServer({ name: "lexdania", version: "0.1.0" }, { instructions: SERVER_PROMPT });
 
-  registerAskTool(server, { lawSource, legislationCorpus });
+  registerAskTool(server, { lawSource, legislationCorpus, waitUntil: (promise) => ctx.waitUntil(promise) });
   registerMetadataTool(server, { lawSource });
   registerCompareTool(server, { lawSource, xmlInspector });
   registerQueryTool(server, { lawSource, xmlInspector });

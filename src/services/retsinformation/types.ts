@@ -21,12 +21,24 @@ export interface GroundedAnswer {
   citations: Citation[];
 }
 
+/** A snapshot of on-demand ingest progress, reported once per poll iteration. */
+export interface IngestProgress {
+  /** Milliseconds elapsed since the document upload completed. */
+  elapsedMs: number;
+  /** The total poll budget in milliseconds; ingestion fails once exceeded. */
+  totalMs: number;
+  /** Human-readable status suitable for client display. */
+  message: string;
+}
+
+export type IngestProgressReporter = (progress: IngestProgress) => void;
+
 /**
  * A corpus of law text that can answer questions with citations. The law for a
  * scoped question is ingested on demand (deduplicated by ELI identity).
  */
 export interface LegislationCorpus {
   has(eli: Eli): Promise<boolean>;
-  ingest(eli: Eli, pdf: Blob): Promise<void>;
+  ingest(eli: Eli, pdf: Blob, onProgress?: IngestProgressReporter): Promise<void>;
   answer(question: string, scopedEli: Eli | undefined, maxSources: number): Promise<GroundedAnswer>;
 }
