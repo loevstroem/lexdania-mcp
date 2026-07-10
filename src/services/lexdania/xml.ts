@@ -1,7 +1,7 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import * as xpath from "xpath";
 import { ATTRIBUTE_NODE, CDATA_NODE, ELEMENT_NODE, TEXT_NODE, type XmlAttr, type XmlDocument, type XmlElement, type XmlNode } from "./dom";
-import type { FullQueryMatch, OversizeQueryMatch, QueryOptions, QueryResult, StructureProfile, XmlInspector } from "./types";
+import type { FullQueryMatch, OversizeQueryMatch, QueryAncestor, QueryAncestry, QueryOptions, QueryResult, StructureProfile, XmlInspector } from "./types";
 
 type Selector = (expression: string, node: unknown) => unknown;
 
@@ -37,7 +37,7 @@ export class LexDaniaXmlInspector implements XmlInspector {
     const sliceLimit = options.limit <= 0 ? 0 : options.limit;
     const serializer = new XMLSerializer();
     const matches = nodes.slice(0, sliceLimit).map((node): FullQueryMatch | OversizeQueryMatch => {
-      const ancestry = { path: "", elements: [], explicatus: [] };
+      const ancestry = ancestryOf(node);
       const serialized = serializeNode(node, serializer);
       const approxBytes = new TextEncoder().encode(serialized).byteLength;
       const tag = nodeTag(node);
@@ -230,6 +230,96 @@ function directChildTagCounts(node: unknown): Record<string, number> {
   const counts = new Map<string, number>();
   for (const child of childElements(node as XmlElement)) counts.set(child.tagName, (counts.get(child.tagName) ?? 0) + 1);
   return Object.fromEntries(counts);
+}
+
+/**
+ * Builds deterministic ancestry metadata for an XPath result node.
+ *
+ * @param node - XPath result node
+ * @returns Root-to-owner ancestry metadata
+ */
+function ancestryOf(node: unknown): QueryAncestry {
+  const owner = ownerElementOf(node);
+  if (!owner) return { path: "", elements: [], explicatus: [] };
+
+  const ancestryElements: XmlElement[] = [];
+  for (let element: XmlElement | null = owner; element; element = parentElementOf(element)) ancestryElements.push(element);
+  ancestryElements.reverse();
+
+  const elements = ancestryElements.map(queryAncestorOf);
+  const explicatus: string[] = [];
+  const collected = new Set<XmlElement>();
+  for (const element of ancestryElements) {
+    const candidates = localNameOf(element.tagName) === "Explicatus" ? [element] : childElements(element).filter((child) => localNameOf(child.tagName) === "Explicatus");
+    for (const candidate of candidates) {
+      if (collected.has(candidate)) continue;
+      collected.add(candidate);
+      explicatus.push(textContent(candidate));
+    }
+  }
+
+  const path = elements.map((element, index) => (index === 0 ? element.tag : `${element.tag}[${element.ordinal}]`)).join(" > ");
+  return { path, elements, explicatus };
+}
+
+/**
+ * Resolves the element represented by or owning an XPath result node.
+ *
+ * @param node - XPath result node
+ * @returns Matched or owning element, when available
+ */
+function ownerElementOf(node: unknown): XmlElement | null {
+  const xmlNode = node as Partial<XmlAttr> & Partial<XmlNode>;
+  if (xmlNode.nodeType === ELEMENT_NODE) return node as XmlElement;
+  if (xmlNode.nodeType === ATTRIBUTE_NODE) return xmlNode.ownerElement ?? null;
+  return parentElementOf(xmlNode as XmlNode);
+}
+
+/**
+ * Finds the nearest parent element of an XML node.
+ *
+ * @param node - Child XML node
+ * @returns Nearest parent element, when available
+ */
+function parentElementOf(node: XmlNode): XmlElement | null {
+  let parent = node.parentNode ?? null;
+  while (parent && parent.nodeType !== ELEMENT_NODE) parent = parent.parentNode ?? null;
+  return parent as XmlElement | null;
+}
+
+/**
+ * Describes an element and its same-qualified-tag sibling position.
+ *
+ * @param element - XML element to describe
+ * @returns Query ancestry element record
+ */
+function queryAncestorOf(element: XmlElement): QueryAncestor {
+  const ancestor: QueryAncestor = { tag: element.tagName, ordinal: siblingOrdinalOf(element) };
+  for (const attribute of attributesOf(element)) {
+    const localName = localNameOf(attribute.name);
+    if (localName === "id") ancestor.id ??= attribute.value;
+    if (localName === "localId") ancestor.localId ??= attribute.value;
+  }
+  return ancestor;
+}
+
+/**
+ * Calculates an element's one-based ordinal among same-qualified-tag siblings.
+ *
+ * @param element - XML element to position
+ * @returns One-based sibling ordinal
+ */
+function siblingOrdinalOf(element: XmlElement): number {
+  const parent = element.parentNode;
+  if (!parent) return 1;
+
+  let ordinal = 1;
+  for (let i = 0; i < parent.childNodes.length; i++) {
+    const sibling = parent.childNodes.item(i);
+    if (sibling === element) break;
+    if (sibling?.nodeType === ELEMENT_NODE && (sibling as XmlElement).tagName === element.tagName) ordinal++;
+  }
+  return ordinal;
 }
 
 /**

@@ -17,6 +17,44 @@ const LEX = `<?xml version="1.0" encoding="UTF-8"?>
   <lex:Paragraf>2</lex:Paragraf>
 </lex:LexDaniaDokument>`;
 
+const ANCESTRY = `<?xml version="1.0" encoding="UTF-8"?>
+<lex:Dokument xmlns:lex="urn:lex" xmlns:meta="urn:metadata" meta:ID="ignored-root-id">
+  <lex:Kapitel xml:id="chapter-1">
+    <lex:Explicatus>Kapitel I</lex:Explicatus>
+    <lex:Paragraf><lex:Stk/></lex:Paragraf>
+  </lex:Kapitel>
+  <lex:Kapitel xml:id="chapter-2" meta:localId="chapter-local-2">
+    <lex:Explicatus>Kapitel   II</lex:Explicatus>
+    <lex:Paragraf meta:localID="ignored-paragraph-local-id"><lex:Stk/></lex:Paragraf>
+    <lex:Paragraf xml:id="paragraph-2" meta:localID="ignored-paragraph-local-id">
+      <lex:Explicatus>§  2.</lex:Explicatus>
+      <lex:Stk/>
+      <lex:Stk xml:id="subsection-2" meta:localId="subsection-local-2">
+        <lex:Explicatus>Stk.   <lex:Number>2</lex:Number>.</lex:Explicatus>
+        <lex:Linea>First line</lex:Linea>
+        <lex:Linea target="yes">Owner <lex:Emphasis>text</lex:Emphasis> tail</lex:Linea>
+      </lex:Stk>
+    </lex:Paragraf>
+  </lex:Kapitel>
+</lex:Dokument>`;
+
+const TARGET_STK_ANCESTRY = {
+  path: "lex:Dokument > lex:Kapitel[2] > lex:Paragraf[2] > lex:Stk[2]",
+  elements: [
+    { tag: "lex:Dokument", ordinal: 1 },
+    { tag: "lex:Kapitel", ordinal: 2, id: "chapter-2", localId: "chapter-local-2" },
+    { tag: "lex:Paragraf", ordinal: 2, id: "paragraph-2" },
+    { tag: "lex:Stk", ordinal: 2, id: "subsection-2", localId: "subsection-local-2" },
+  ],
+  explicatus: ["Kapitel   II", "§  2.", "Stk.   2."],
+};
+
+const TARGET_LINEA_ANCESTRY = {
+  ...TARGET_STK_ANCESTRY,
+  path: `${TARGET_STK_ANCESTRY.path} > lex:Linea[2]`,
+  elements: [...TARGET_STK_ANCESTRY.elements, { tag: "lex:Linea", ordinal: 2 }],
+};
+
 describe("LexDaniaXmlInspector.query", () => {
   const inspector = new LexDaniaXmlInspector();
 
@@ -128,6 +166,60 @@ describe("LexDaniaXmlInspector.query", () => {
     expect(result.matches[0]).toMatchObject({ kind: "match", tag: "Stk", text: "A", xml: "<Stk>A</Stk>" });
   });
 
+  it("builds ancestry with qualified same-tag ordinals and exact local-name identifiers for element hits", () => {
+    const result = inspector.query(ANCESTRY, "//lex:Stk[lex:Linea/@target='yes']", {
+      limit: 1,
+      format: "both",
+      maxNodeBytes: 32768,
+    });
+
+    expect(result.matches[0]).toMatchObject({ kind: "match", ancestry: TARGET_STK_ANCESTRY });
+  });
+
+  it("uses the owner element ancestry for attribute and text-node hits", () => {
+    const options = { limit: 1, format: "both" as const, maxNodeBytes: 32768 };
+    const attribute = inspector.query(ANCESTRY, "//lex:Linea[@target='yes']/@target", options);
+    const text = inspector.query(ANCESTRY, "//lex:Linea[@target='yes']/text()[1]", options);
+
+    expect(attribute.matches[0]).toMatchObject({ kind: "match", tag: "@target", ancestry: TARGET_LINEA_ANCESTRY });
+    expect(text.matches[0]).toMatchObject({ kind: "match", tag: "#text", ancestry: TARGET_LINEA_ANCESTRY });
+  });
+
+  it("preserves direct and self Explicatus text without descendant-label duplication", () => {
+    const result = inspector.query(ANCESTRY, "//lex:Stk[lex:Linea/@target='yes']/lex:Explicatus", {
+      limit: 1,
+      format: "text",
+      maxNodeBytes: 32768,
+    });
+
+    expect(result.matches[0]).toMatchObject({
+      kind: "match",
+      ancestry: {
+        path: `${TARGET_STK_ANCESTRY.path} > lex:Explicatus[1]`,
+        elements: [...TARGET_STK_ANCESTRY.elements, { tag: "lex:Explicatus", ordinal: 1 }],
+        explicatus: ["Kapitel   II", "§  2.", "Stk.   2."],
+      },
+    });
+  });
+
+  it("attaches identical ancestry to full hits and size stubs", () => {
+    const full = inspector.query(ANCESTRY, "//lex:Linea[@target='yes']", {
+      limit: 1,
+      format: "both",
+      maxNodeBytes: 32768,
+    });
+    const stub = inspector.query(ANCESTRY, "//lex:Linea[@target='yes']", {
+      limit: 1,
+      format: "both",
+      maxNodeBytes: 1,
+    });
+
+    expect(full.matches[0]?.kind).toBe("match");
+    expect(stub.matches[0]?.kind).toBe("stub");
+    expect(full.matches[0]?.ancestry).toEqual(TARGET_LINEA_ANCESTRY);
+    expect(stub.matches[0]?.ancestry).toEqual(TARGET_LINEA_ANCESTRY);
+  });
+
   it("returns an ordered UTF-8 size stub before text extraction", () => {
     const serializedXml = "<Section>æøå<Child/><Child/><Other><Child/></Other></Section>";
     const xml = `<Root>${serializedXml}<Tail>ok</Tail><Later>ignored</Later></Root>`;
@@ -147,7 +239,14 @@ describe("LexDaniaXmlInspector.query", () => {
       approxBytes,
       childTagCounts: { Child: 2, Other: 1 },
       hint: "Matched node exceeds maxNodeBytes; narrow the XPath or raise maxNodeBytes.",
-      ancestry: { path: "", elements: [], explicatus: [] },
+      ancestry: {
+        path: "Root > Section[1]",
+        elements: [
+          { tag: "Root", ordinal: 1 },
+          { tag: "Section", ordinal: 1 },
+        ],
+        explicatus: [],
+      },
     });
     expect(result.matches[0]).not.toHaveProperty("xml");
     expect(result.matches[0]).not.toHaveProperty("text");

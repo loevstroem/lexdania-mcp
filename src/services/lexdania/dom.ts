@@ -6,6 +6,7 @@
 export interface XmlAttr {
   name: string;
   value: string;
+  ownerElement?: XmlElement | null;
 }
 
 export interface XmlNamedNodeMap {
@@ -23,6 +24,7 @@ export interface XmlNode {
   data?: string;
   nodeValue?: string | null;
   childNodes: XmlNodeList;
+  parentNode?: XmlNode | null;
 }
 
 export interface XmlElement extends XmlNode {
