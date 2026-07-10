@@ -1,7 +1,7 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import * as xpath from "xpath";
 import { ATTRIBUTE_NODE, CDATA_NODE, ELEMENT_NODE, TEXT_NODE, type XmlAttr, type XmlDocument, type XmlElement, type XmlNode } from "./dom";
-import type { QueryResult, StructureProfile, XmlInspector } from "./types";
+import type { FullQueryMatch, QueryOptions, QueryResult, StructureProfile, XmlInspector } from "./types";
 
 type Selector = (expression: string, node: unknown) => unknown;
 
@@ -15,10 +15,10 @@ export class LexDaniaXmlInspector implements XmlInspector {
    *
    * @param xml - The raw XML string of the document.
    * @param expression - The namespace-aware XPath expression to evaluate.
-   * @param limit - The maximum number of elements to serialize in the response.
-   * @returns The QueryResult containing the nodes or scalar value.
+   * @param options - Query result selection options
+   * @returns Query results containing matches or a scalar value
    */
-  query(xml: string, expression: string, limit: number): QueryResult {
+  query(xml: string, expression: string, options: QueryOptions): QueryResult {
     const doc = parse(xml);
     const select = xpath.useNamespaces(namespacesOf(doc)) as unknown as Selector;
     const result = select(expression, doc);
@@ -26,19 +26,27 @@ export class LexDaniaXmlInspector implements XmlInspector {
     // count()/string()/number()/boolean() XPath expressions evaluate to a scalar,
     // not a node-set — surface it as `scalarValue` instead of miscounting it as one node.
     if (typeof result === "number" || typeof result === "string" || typeof result === "boolean") {
-      return { count: 0, nodes: [], text: [], scalarValue: result };
+      return { count: 0, matches: [], scalarValue: result };
     }
 
-    const matches: unknown[] = Array.isArray(result) ? result : result == null ? [] : [result];
+    const nodes: unknown[] = Array.isArray(result) ? result : result == null ? [] : [result];
 
-    const count = matches.length;
-    const sliceLimit = limit <= 0 ? 0 : limit; // slice() clamps to length, so no Math.min needed
+    const count = nodes.length;
+    const sliceLimit = options.limit <= 0 ? 0 : options.limit;
     const serializer = new XMLSerializer();
-    const sliced = matches.slice(0, sliceLimit);
-    const nodes = sliced.map((node) => serializeNode(node, serializer));
-    const text = sliced.map((node) => collapseWhitespace(getNodeText(node)));
+    const matches = nodes.slice(0, sliceLimit).map((node): FullQueryMatch => {
+      const xmlNode = node as Partial<XmlAttr> & Partial<XmlElement> & { nodeName?: string };
+      const match: FullQueryMatch = {
+        kind: "match",
+        tag: xmlNode.tagName ?? xmlNode.name ?? xmlNode.nodeName ?? "",
+        ancestry: { path: "", elements: [], explicatus: [] },
+      };
+      if (options.format !== "text") match.xml = serializeNode(node, serializer);
+      if (options.format !== "xml") match.text = collapseWhitespace(getNodeText(node));
+      return match;
+    });
 
-    return { count, nodes, text };
+    return { count, matches };
   }
 
   /**

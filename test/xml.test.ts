@@ -20,30 +20,44 @@ const LEX = `<?xml version="1.0" encoding="UTF-8"?>
 describe("LexDaniaXmlInspector.query", () => {
   const inspector = new LexDaniaXmlInspector();
 
-  it("counts and serializes matching nodes", () => {
-    const result = inspector.query(LEGACY, "//Paragraf", 20);
+  it("counts and returns matching nodes", () => {
+    const result = inspector.query(LEGACY, "//Paragraf", {
+      limit: 20,
+      format: "both",
+      maxNodeBytes: 32768,
+    });
     expect(result.count).toBe(2);
-    expect(result.nodes).toHaveLength(2);
-    expect(result.nodes[0]).toContain("<Paragraf");
-    expect(result.text).toHaveLength(2);
-    expect(result.text[0]).toBe("A");
-    expect(result.text[1]).toBe("BC");
+    expect(result.matches).toHaveLength(2);
+    expect(result.matches[0]).toMatchObject({ kind: "match", tag: "Paragraf", text: "A" });
+    expect(result.matches[0]).toHaveProperty("xml", expect.stringContaining("<Paragraf"));
+    expect(result.matches[1]).toMatchObject({ kind: "match", tag: "Paragraf", text: "BC" });
   });
 
   it("treats limit 0 as count-only", () => {
-    const result = inspector.query(LEGACY, "//Stk", 0);
-    expect(result.count).toBe(3);
-    expect(result.nodes).toEqual([]);
+    const result = inspector.query(LEGACY, "//Stk", {
+      limit: 0,
+      format: "both",
+      maxNodeBytes: 32768,
+    });
+    expect(result).toEqual({ count: 3, matches: [] });
   });
 
   it("truncates to the limit", () => {
-    const result = inspector.query(LEGACY, "//Stk", 1);
+    const result = inspector.query(LEGACY, "//Stk", {
+      limit: 1,
+      format: "both",
+      maxNodeBytes: 32768,
+    });
     expect(result.count).toBe(3);
-    expect(result.nodes).toHaveLength(1);
+    expect(result.matches).toHaveLength(1);
   });
 
   it("resolves declared namespace prefixes", () => {
-    const result = inspector.query(LEX, "//lex:Paragraf", 20);
+    const result = inspector.query(LEX, "//lex:Paragraf", {
+      limit: 20,
+      format: "both",
+      maxNodeBytes: 32768,
+    });
     expect(result.count).toBe(2);
   });
 
@@ -54,22 +68,64 @@ describe("LexDaniaXmlInspector.query", () => {
         <foo:item>Test</foo:item>
       </child>
     </root>`;
-    const result = inspector.query(nestedXml, "//foo:item", 20);
+    const result = inspector.query(nestedXml, "//foo:item", {
+      limit: 20,
+      format: "both",
+      maxNodeBytes: 32768,
+    });
     expect(result.count).toBe(1);
-    expect(result.nodes[0]).toBe('<foo:item xmlns:foo="http://example.com/foo">Test</foo:item>');
+    expect(result.matches[0]).toHaveProperty("xml", '<foo:item xmlns:foo="http://example.com/foo">Test</foo:item>');
   });
 
   it("surfaces a scalar value for value expressions instead of miscounting", () => {
-    const result = inspector.query(LEGACY, "count(//Paragraf)", 20);
-    expect(result.scalarValue).toBe(2);
-    expect(result.count).toBe(0);
-    expect(result.nodes).toEqual([]);
+    const result = inspector.query(LEGACY, "count(//Paragraf)", {
+      limit: 20,
+      format: "both",
+      maxNodeBytes: 32768,
+    });
+    expect(result).toEqual({ count: 0, matches: [], scalarValue: 2 });
   });
 
   it("escapes special characters in serialized attribute values", () => {
     const xml = `<?xml version="1.0" encoding="UTF-8"?><r><e a='x &amp; &quot;y&quot; &lt;z'/></r>`;
-    const result = inspector.query(xml, "//@a", 20);
-    expect(result.nodes[0]).toBe('a="x &amp; &quot;y&quot; &lt;z"');
+    const result = inspector.query(xml, "//@a", {
+      limit: 20,
+      format: "both",
+      maxNodeBytes: 32768,
+    });
+    expect(result.matches[0]).toHaveProperty("xml", 'a="x &amp; &quot;y&quot; &lt;z"');
+  });
+
+  it("returns only text for text format", () => {
+    const result = inspector.query(LEGACY, "//Stk", {
+      limit: 20,
+      format: "text",
+      maxNodeBytes: 32768,
+    });
+
+    expect(result.matches[0]).toMatchObject({ kind: "match", tag: "Stk", text: "A" });
+    expect(result.matches[0]).not.toHaveProperty("xml");
+  });
+
+  it("returns only XML for xml format", () => {
+    const result = inspector.query(LEGACY, "//Stk", {
+      limit: 20,
+      format: "xml",
+      maxNodeBytes: 32768,
+    });
+
+    expect(result.matches[0]).toHaveProperty("xml", "<Stk>A</Stk>");
+    expect(result.matches[0]).not.toHaveProperty("text");
+  });
+
+  it("returns text and XML for both format", () => {
+    const result = inspector.query(LEGACY, "//Stk", {
+      limit: 20,
+      format: "both",
+      maxNodeBytes: 32768,
+    });
+
+    expect(result.matches[0]).toMatchObject({ kind: "match", tag: "Stk", text: "A", xml: "<Stk>A</Stk>" });
   });
 });
 
